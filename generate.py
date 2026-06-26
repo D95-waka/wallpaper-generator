@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 
+from types import LambdaType
+
 from matplotlib.axes import Axes
 import logging
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
-import sys
 import argparse
+from itertools import pairwise
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +106,90 @@ class ScalarColorizerBase(object):
         m = 255 * (x - xmin) / (xmax - xmin)
         return np.stack([m, m, m], axis=2).astype(int)
 
-class DiscreteColorizer(ScalarColorizerBase):
-    def __init__(self, map: list) -> None:
+def color_to_array(color: str | list) -> np.ndarray:
+    if isinstance(color, str):
+        hex_str = color.lstrip('#').strip()
+        if len(hex_str) in (3, 4):
+            hex_str = "".join(char * 2 for char in hex_str)
+
+        if len(hex_str) not in (6, 8):
+            raise ValueError(f"Invalid HEX color format: '{color}'")
+
+        try:
+            channels = [int(hex_str[i:i+2], 16) for i in range(0, len(hex_str), 2)]
+        except ValueError as e:
+            raise ValueError(f"Invalid hex characters in color: '{color}'") from e
+
+        if len(channels) == 3:
+            channels.append(255)
+
+        return np.array(channels, dtype=np.float64) / 255.0
+
+    elif isinstance(color, (list, tuple, np.ndarray)):
+        arr = np.array(color, dtype=np.float64)
+        if arr.size not in (3, 4):
+            raise ValueError("Color array must have 3 (RGB) or 4 (RGBA) elements.")
+
+        if np.any(arr > 1.0):
+            arr /= 255.0
+
+        if arr.size == 3:
+            arr = np.append(arr, 1.0)
+
+        return np.clip(arr, 0.0, 1.0)
+
+class PaletteGeneratorBase(object):
+    def create(self) -> np.ndarray:
+        return np.array([[0, 0, 0, 0]])
+
+class ConstantPaletteGenerator(PaletteGeneratorBase):
+    def __init__(self, colors) -> None:
         super().__init__()
-        self.__map = map
+        self.__colors = np.array([color_to_array(x) for x in colors])
+
+    def create(self) -> np.ndarray:
+        return self.__colors
+
+class LinearGradientPaletteGenerator(PaletteGeneratorBase):
+    def __init__(self, generator: PaletteGeneratorBase, extend_to=100) -> None:
+        super().__init__()
+        self.__prev = generator
+        self.__extend_to = extend_to
+
+    def create(self) -> np.ndarray:
+        colors = self.__prev.create()
+        l = np.linspace([0], [1], self.__extend_to)[:-1, :]
+        result = []
+        for c1, c2 in pairwise(colors):
+            a = c1 * (1 - l) + c2 * l
+            result.extend(a)
+
+        return np.array(result)
+
+class GradientColorizer(ScalarColorizerBase):
+    def __init__(self,
+                 colors: np.ndarray,
+                 mmin = None,
+                 mmax = None,
+                 under_color = '#000',
+                 over_color = '#fff') -> None:
+        super().__init__()
+        self.__colors = colors
+        self.__mmin = mmin
+        self.__mmax = mmax
+        self.__under_color = color_to_array(under_color)
+        self.__over_color = color_to_array(over_color)
 
     def get_color(self, x):
-        return self.__map[x]
+        mmin = self.__mmin if self.__mmin else np.min(x)
+        mmax = self.__mmax if self.__mmax else np.max(x)
+        m = (x - mmin) / (mmax - mmin)
+        colored = np.zeros(list(m.shape) + [4])
+        colored[m < 0, :] = self.__under_color
+        colored[m >= 1, :] = self.__over_color
+        in_range = (0 <= m) & (m < 1)
+        colored[in_range, :] = self.__colors[np.round((len(self.__colors) - 1) * m[in_range]).astype(np.int64), :]
+        return colored
 
 class ColorizeGenerator(GeneratorBase):
     def __init__(self, colorizer: ScalarColorizerBase) -> None:
@@ -186,12 +265,18 @@ if __name__ == '__main__':
     # Init mode
     mode = args.mode
     width, height = 1920, 1080
+    palette_generator = LinearGradientPaletteGenerator(ConstantPaletteGenerator(COLORS_CATPPUCCIN_MACHIATO),
+                                                       extend_to=100)
+    palette = palette_generator.create()
     modes = {
         'default': ComplexCanvasGenerator(
             center=-0.5 + 0j,
             dims=(width, height),
             horizontal_diameter=5) \
-            / MandelbrotScoreGenerator(iteration_count=2**8) \
+            / MandelbrotScoreGenerator(iteration_count=2**5) \
+            #/ ColorizeGenerator(GradientColorizer(colors=palette,
+            #                                      mmin=0,
+            #                                      mmax=1)) \
             / SaveAsImageGenerator(filename='bin/default.png'),
         'tails': ComplexCanvasGenerator(
             center=np.float128(-.74364085) + np.float128(.13182733) * 1j,
@@ -205,6 +290,12 @@ if __name__ == '__main__':
             dims=(width, height)) \
             / MandelbrotScoreGenerator(iteration_count=2**11) \
             / SaveAsImageGenerator(filename='bin/anthena.png'),
+        'halo': ComplexCanvasGenerator(
+            center=np.float128(-.5503493176297569) + np.float128(.6259309572825709 ) * 1j,
+            horizontal_diameter=np.float128(.00000000000054),
+            dims=(width, height)) \
+            / MandelbrotScoreGenerator(iteration_count=2**14) \
+            / SaveAsImageGenerator(filename='bin/halo.png'),
     }
     if not mode in modes:
         print(f'available modes: {", ".join(modes.keys())}')
