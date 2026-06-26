@@ -6,14 +6,9 @@ import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
 import sys
+import argparse
 
 logger = logging.getLogger(__name__)
-
-LOG_LEVEL = {
-    "error": logging.ERROR,
-    "info": logging.INFO,
-    "debug": logging.DEBUG
-}
 
 COLORS_CATPPUCCIN_MACHIATO = [
     '#24273a', # Base
@@ -43,6 +38,7 @@ class GeneratorBase(object):
         self.prev: GeneratorBase | None = None
 
     def generate(self) -> np.ndarray:
+        logger.debug(f'generate called with {type(self)}')
         if self.prev != None:
             return self.prev.generate()
         
@@ -52,11 +48,19 @@ class GeneratorBase(object):
         other.prev = self
         return other
 
+class ConstantCanvasGenerator(GeneratorBase):
+    def __init__(self, array: np.ndarray) -> None:
+        super().__init__()
+        self.__array = array
+
+    def generate(self) -> np.ndarray:
+        return self.__array.copy()
+
 class ComplexCanvasGenerator(GeneratorBase):
     def __init__(self,
                  dims: tuple[int, int] = (1920, 1080),
-                 center = np.float128(0) + 0j,
-                 horizontal_diameter: np.float128 = np.float128(1)) -> None:
+                 center: np.complexfloating | complex = np.float128(0) + 0j,
+                 horizontal_diameter: np.float128 | float = np.float128(1)) -> None:
         super().__init__()
         self.__dims = dims
         self.__center = center
@@ -93,6 +97,30 @@ class MandelbrotScoreGenerator(GeneratorBase):
         results[to_compute] = -1
         return results / self.__iteration_count
 
+class ScalarColorizerBase(object):
+    def get_color(self, x):
+        xmin = np.min(x)
+        xmax = np.max(x)
+        m = 255 * (x - xmin) / (xmax - xmin)
+        return np.stack([m, m, m], axis=2).astype(int)
+
+class DiscreteColorizer(ScalarColorizerBase):
+    def __init__(self, map: list) -> None:
+        super().__init__()
+        self.__map = map
+
+    def get_color(self, x):
+        return self.__map[x]
+
+class ColorizeGenerator(GeneratorBase):
+    def __init__(self, colorizer: ScalarColorizerBase) -> None:
+        super().__init__()
+        self.__colorizer = colorizer
+
+    def generate(self) -> np.ndarray:
+        m = super().generate()
+        return self.__colorizer.get_color(m)
+
 class SaveAsImageGenerator(GeneratorBase):
     def __init__(self, filename: str) -> None:
         super().__init__()
@@ -100,7 +128,7 @@ class SaveAsImageGenerator(GeneratorBase):
 
     def generate(self) -> np.ndarray:
         m = super().generate()
-        fig = plt.figure(figsize=(width, height), dpi=1, frameon=False)
+        fig = plt.figure(figsize=m.shape[0:2], dpi=1, frameon=False)
         ax = Axes(fig, (0, 0, 1, 1))
         ax.set_axis_off()
         fig.add_axes(ax)
@@ -109,25 +137,12 @@ class SaveAsImageGenerator(GeneratorBase):
                                                                under=COLORS_CATPPUCCIN_MACHIATO[0])
         plt.imshow(m,
                    cmap = palette,
-                   vmin=0, vmax=1,
-                   aspect='equal', interpolation='nearest')
+                   vmin=0,
+                   vmax=1,
+                   aspect='equal',
+                   interpolation='nearest')
         plt.savefig(self.__filename, bbox_inches="tight", pad_inches=0, dpi=1)
         return m
-
-def mandelbrot_image(x_center: np.float128,
-                     y_center: np.float128,
-                     relative_width: np.float128,
-                     width: int,
-                     height: int,
-                     iteration_count = 100,
-                     filename = 'a.png'):
-    generator = ComplexCanvasGenerator(
-        center=x_center + 1j * y_center,
-        dims=(width, height),
-        horizontal_diameter=relative_width) \
-        / MandelbrotScoreGenerator(iteration_count=iteration_count) \
-        / SaveAsImageGenerator(filename=filename)
-    generator.generate()
 
 class CustomFormatter(logging.Formatter):
     __grey = "\x1b[38;21m"
@@ -150,44 +165,49 @@ class CustomFormatter(logging.Formatter):
         formatter = logging.Formatter(log_fmt)
         return formatter.format(record)
 
-def initialize_logger(config):
-    logger.setLevel(LOG_LEVEL[config["log_level"]])
-    logger.info("BEGIN")
+def initialize_logger(level):
+    logger.setLevel(level)
+    logger.debug("BEGIN")
     ch = logging.StreamHandler()
     ch.setFormatter(CustomFormatter())
     logger.addHandler(ch)
-    logger.debug(f"Loaded config: {config}")
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print('argument not provided')
+    # Args
+    parser = argparse.ArgumentParser(
+        prog='Image Generator',
+        description='Create and colorize analytic images, such as fractals',
+        epilog='for more help read the code')
+    parser.add_argument('mode')
+    parser.add_argument('-v', '--verbose', action='store_true')
+    args = parser.parse_args()
+    initialize_logger(logging.DEBUG if args.verbose else logging.INFO)
+
+    # Init mode
+    mode = args.mode
+    width, height = 1920, 1080
+    modes = {
+        'default': ComplexCanvasGenerator(
+            center=-0.5 + 0j,
+            dims=(width, height),
+            horizontal_diameter=5) \
+            / MandelbrotScoreGenerator(iteration_count=2**8) \
+            / SaveAsImageGenerator(filename='bin/default.png'),
+        'tails': ComplexCanvasGenerator(
+            center=np.float128(-.74364085) + np.float128(.13182733) * 1j,
+            horizontal_diameter=np.float128(.00012068),
+            dims=(width, height)) \
+            / MandelbrotScoreGenerator(iteration_count=2**10) \
+            / SaveAsImageGenerator(filename='bin/tails.png'),
+        'anthena': ComplexCanvasGenerator(
+            center=np.float128(-.7436447860) + np.float128(.1318252536) * 1j,
+            horizontal_diameter=np.float128(.0000029336),
+            dims=(width, height)) \
+            / MandelbrotScoreGenerator(iteration_count=2**11) \
+            / SaveAsImageGenerator(filename='bin/anthena.png'),
+    }
+    if not mode in modes:
+        print(f'available modes: {", ".join(modes.keys())}')
         exit(1)
 
-    width, height = 1920, 1080
-    match sys.argv[1]:
-        case 'default':
-            # The default one
-            x_center = np.float128(-0.5)
-            y_center = np.float128(0)
-            relative_width = np.float128(5)
-            mandelbrot_image(x_center, y_center, relative_width, width, height,
-                             iteration_count=2**8,
-                             filename='bin/default.png')
-        case 'tails':
-            # seahorse tails
-            x_center = np.float128(-.74364085)
-            y_center = np.float128(.13182733)
-            relative_width = np.float128(.00012068)
-            mandelbrot_image(x_center, y_center, relative_width, width, height,
-                             iteration_count=2**10,
-                             filename='bin/tail.png')
-        case 'anthena':
-            x_center = np.float128(-.7436447860)
-            y_center = np.float128(.1318252536)
-            relative_width = np.float128(.0000029336)
-            mandelbrot_image(x_center, y_center, relative_width, width, height,
-                             iteration_count=2**11,
-                             filename='bin/anthena.png')
-        case _:
-            print('invalid selection')
-            exit(1)
+    modes[mode].generate()
