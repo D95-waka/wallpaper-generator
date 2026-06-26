@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 
-from types import LambdaType
-
 from matplotlib.axes import Axes
 import logging
 import matplotlib.colors as colors
@@ -99,13 +97,6 @@ class MandelbrotScoreGenerator(GeneratorBase):
         results[to_compute] = -1
         return results / self.__iteration_count
 
-class ScalarColorizerBase(object):
-    def get_color(self, x):
-        xmin = np.min(x)
-        xmax = np.max(x)
-        m = 255 * (x - xmin) / (xmax - xmin)
-        return np.stack([m, m, m], axis=2).astype(int)
-
 def color_to_array(color: str | list) -> np.ndarray:
     if isinstance(color, str):
         hex_str = color.lstrip('#').strip()
@@ -138,67 +129,56 @@ def color_to_array(color: str | list) -> np.ndarray:
 
         return np.clip(arr, 0.0, 1.0)
 
-class PaletteGeneratorBase(object):
-    def create(self) -> np.ndarray:
-        return np.array([[0, 0, 0, 0]])
+class ColorProviderBase(object):
+    def convert(self, score: np.ndarray) -> np.ndarray:
+        return np.repeat([np.zeros_like(score)], 4, axis=0)
 
-class ConstantPaletteGenerator(PaletteGeneratorBase):
-    def __init__(self, colors) -> None:
-        super().__init__()
-        self.__colors = np.array([color_to_array(x) for x in colors])
-
-    def create(self) -> np.ndarray:
-        return self.__colors
-
-class LinearGradientPaletteGenerator(PaletteGeneratorBase):
-    def __init__(self, generator: PaletteGeneratorBase, extend_to=100) -> None:
-        super().__init__()
-        self.__prev = generator
-        self.__extend_to = extend_to
-
-    def create(self) -> np.ndarray:
-        colors = self.__prev.create()
-        l = np.linspace([0], [1], self.__extend_to)[:-1, :]
-        result = []
-        for c1, c2 in pairwise(colors):
-            a = c1 * (1 - l) + c2 * l
-            result.extend(a)
-
-        return np.array(result)
-
-class GradientColorizer(ScalarColorizerBase):
+class ThresholdColorProvider(ColorProviderBase):
     def __init__(self,
-                 colors: np.ndarray,
                  mmin = None,
                  mmax = None,
                  under_color = '#000',
                  over_color = '#fff') -> None:
         super().__init__()
-        self.__colors = colors
         self.__mmin = mmin
         self.__mmax = mmax
         self.__under_color = color_to_array(under_color)
         self.__over_color = color_to_array(over_color)
 
-    def get_color(self, x):
-        mmin = self.__mmin if self.__mmin else np.min(x)
-        mmax = self.__mmax if self.__mmax else np.max(x)
-        m = (x - mmin) / (mmax - mmin)
+    def convert(self, score: np.ndarray) -> np.ndarray:
+        mmin = self.__mmin if self.__mmin != None else np.min(score)
+        mmax = self.__mmax if self.__mmax != None else np.max(score)
+        m = (score - mmin) / (mmax - mmin)
         colored = np.zeros(list(m.shape) + [4])
         colored[m < 0, :] = self.__under_color
         colored[m >= 1, :] = self.__over_color
         in_range = (0 <= m) & (m < 1)
-        colored[in_range, :] = self.__colors[np.round((len(self.__colors) - 1) * m[in_range]).astype(np.int64), :]
+        colored[in_range, :] = self.convert_in_range(score[in_range])
         return colored
 
+    def convert_in_range(self, score: np.ndarray) -> np.ndarray:
+        return np.repeat([np.full_like(0.5, score)], 4, axis=0)
+
+
+class LinearGradientColorProvider(ThresholdColorProvider):
+    def __init__(self, colors: list, mmin=None, mmax=None, under_color='#000', over_color='#fff') -> None:
+        super().__init__(mmin, mmax, under_color, over_color)
+        self.__colors = np.array([color_to_array(x) for x in colors])
+
+    def convert_in_range(self, score: np.ndarray) -> np.ndarray:
+        a = self.__colors[np.floor((len(self.__colors) - 1) * score).astype(np.int64), :]
+        b = self.__colors[np.ceil((len(self.__colors) - 1) * score).astype(np.int64), :]
+        c = (((len(self.__colors) - 1) * score) % 1)[:, None]
+        return a * (1 - c) + b * c
+
 class ColorizeGenerator(GeneratorBase):
-    def __init__(self, colorizer: ScalarColorizerBase) -> None:
+    def __init__(self, color_provider: ColorProviderBase) -> None:
         super().__init__()
-        self.__colorizer = colorizer
+        self.__color_provider = color_provider
 
     def generate(self) -> np.ndarray:
         m = super().generate()
-        return self.__colorizer.get_color(m)
+        return self.__color_provider.convert(m)
 
 class SaveAsImageGenerator(GeneratorBase):
     def __init__(self, filename: str) -> None:
@@ -265,18 +245,17 @@ if __name__ == '__main__':
     # Init mode
     mode = args.mode
     width, height = 1920, 1080
-    palette_generator = LinearGradientPaletteGenerator(ConstantPaletteGenerator(COLORS_CATPPUCCIN_MACHIATO),
-                                                       extend_to=100)
-    palette = palette_generator.create()
+    color_provider = LinearGradientColorProvider(colors=COLORS_CATPPUCCIN_MACHIATO,
+                                                 under_color=COLORS_CATPPUCCIN_MACHIATO[0],
+                                                 mmin=0,
+                                                 mmax=1)
     modes = {
         'default': ComplexCanvasGenerator(
             center=-0.5 + 0j,
             dims=(width, height),
             horizontal_diameter=5) \
             / MandelbrotScoreGenerator(iteration_count=2**5) \
-            #/ ColorizeGenerator(GradientColorizer(colors=palette,
-            #                                      mmin=0,
-            #                                      mmax=1)) \
+            / ColorizeGenerator(color_provider) \
             / SaveAsImageGenerator(filename='bin/default.png'),
         'tails': ComplexCanvasGenerator(
             center=np.float128(-.74364085) + np.float128(.13182733) * 1j,
