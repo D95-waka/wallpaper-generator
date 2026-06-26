@@ -128,7 +128,7 @@ class SaveAsImageGenerator(GeneratorBase):
 
     def generate(self) -> np.ndarray:
         m = super().generate()
-        fig = plt.figure(figsize=m.shape[0:2], dpi=1, frameon=False)
+        fig = plt.figure(figsize=(m.shape[1], m.shape[0]), dpi=1, frameon=False)
         ax = Axes(fig, (0, 0, 1, 1))
         ax.set_axis_off()
         fig.add_axes(ax)
