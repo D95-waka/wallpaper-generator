@@ -73,7 +73,7 @@ class ComplexCanvasGenerator(GeneratorBase):
         ymin = np.imag(self.__center) + self.__horizontal_diameter * self.__dims[1] / self.__dims[0] / 2,
         ymax = np.imag(self.__center) - self.__horizontal_diameter * self.__dims[1] / self.__dims[0] / 2,
         x = np.linspace(xmin, xmax, self.__dims[0])
-        y = np.linspace(ymin, ymax, height)
+        y = np.linspace(ymin, ymax, self.__dims[1])
         xx, yy = np.meshgrid(x, y)
         zz = xx + 1j * yy
         return zz
@@ -97,6 +97,30 @@ class MandelbrotScoreGenerator(GeneratorBase):
 
         results[to_compute] = -1
         return results / self.__iteration_count
+
+class FunctionGraphGenerator(GeneratorBase):
+    def __init__(self, fn, radius = 0.) -> None:
+        super().__init__()
+        self.__fn = fn
+        self.__radius = radius
+
+    def generate(self) -> np.ndarray:
+        m = super().generate()
+        epsilon = np.abs(m[0, 0] - m[0, 1])
+        radius = int(self.__radius / epsilon) if self.__radius > 0 else 5
+        by_y_mask = np.abs(np.imag(m) - self.__fn(np.real(m))) < epsilon
+        result = np.zeros_like(m, dtype=int)
+        it = np.nditer(m, flags=['multi_index'])
+        for _ in it:
+            if not by_y_mask[it.multi_index]:
+                continue
+
+            for p in np.ndindex((2 * radius, 2 * radius)):
+                i = np.array(it.multi_index) + p - [radius, radius]
+                if np.all((np.array([0, 0]) <= i) & (i < result.shape)):
+                    result[*i] = 1
+
+        return result
 
 def color_to_array(color: str | list) -> np.ndarray:
     if isinstance(color, str):
@@ -172,6 +196,17 @@ class LinearGradientColorProvider(ThresholdColorProvider):
         convex_combination = (((len(self.__colors) - 1) * score) % 1)[:, None]
         return lower_colors * (1 - convex_combination) + upper_colors * convex_combination
 
+class ColorProviderHolder(ColorProviderBase):
+    def __init__(self, default_provider: ColorProviderBase = ColorProviderBase()) -> None:
+        super().__init__()
+        self.__inner_provider = default_provider
+
+    def convert(self, score: np.ndarray) -> np.ndarray:
+        return self.__inner_provider.convert(score)
+
+    def update_provider(self, provider: ColorProviderBase):
+        self.__inner_provider = provider
+
 class ColorizeGenerator(GeneratorBase):
     def __init__(self, color_provider: ColorProviderBase) -> None:
         super().__init__()
@@ -193,6 +228,7 @@ class SaveAsImageGenerator(GeneratorBase):
         ax.set_axis_off()
         fig.add_axes(ax)
         plt.imshow(m,
+                   cmap='gray',
                    aspect='equal',
                    interpolation='nearest')
         plt.savefig(self.__filename, bbox_inches="tight", pad_inches=0, dpi=1)
@@ -233,46 +269,59 @@ if __name__ == '__main__':
         description='Create and colorize analytic images, such as fractals',
         epilog='for more help read the code')
     parser.add_argument('mode', help='predefined modes')
+    parser.add_argument('-o', '--output', help='output file path, default to bin/<mode>.png')
     parser.add_argument('-v', '--verbose', action='store_true', help='show debug logs')
     parser.add_argument('-t', '--theme', choices=COLOR_DEFS.keys(),
                         default=list(COLOR_DEFS.keys())[0], help='color theme')
     args = parser.parse_args()
     initialize_logger(logging.DEBUG if args.verbose else logging.INFO)
+    provider_updater = ColorProviderHolder()
 
     # Init mode
     mode = args.mode
+    output_path = args.output if args.output != None else f'./bin/{mode}.png'
     colors = COLOR_DEFS[args.theme]
     width, height = 1920, 1080
     color_provider = LinearGradientColorProvider(colors=colors,
                                                  under_color=colors[0],
                                                  mmin=0,
                                                  mmax=1)
+    provider_updater.update_provider(color_provider)
     modes = {
         'default': ComplexCanvasGenerator(
             center=-0.5 + 0j,
             dims=(width, height),
             horizontal_diameter=5) \
             / MandelbrotScoreGenerator(iteration_count=2**7) \
-            / ColorizeGenerator(color_provider) \
+            / ColorizeGenerator(provider_updater) \
             / SaveAsImageGenerator(filename='bin/default.png'),
         'tails': ComplexCanvasGenerator(
             center=np.float128(-.74364085) + np.float128(.13182733) * 1j,
             horizontal_diameter=np.float128(.00012068),
             dims=(width, height)) \
             / MandelbrotScoreGenerator(iteration_count=2**10) \
+            / ColorizeGenerator(provider_updater) \
             / SaveAsImageGenerator(filename='bin/tails.png'),
         'anthena': ComplexCanvasGenerator(
             center=np.float128(-.7436447860) + np.float128(.1318252536) * 1j,
             horizontal_diameter=np.float128(.0000029336),
             dims=(width, height)) \
             / MandelbrotScoreGenerator(iteration_count=2**11) \
+            / ColorizeGenerator(provider_updater) \
             / SaveAsImageGenerator(filename='bin/anthena.png'),
         'halo': ComplexCanvasGenerator(
             center=np.float128(-.5503493176297569) + np.float128(.6259309572825709 ) * 1j,
             horizontal_diameter=np.float128(.00000000000054),
             dims=(width, height)) \
             / MandelbrotScoreGenerator(iteration_count=2**14) \
+            / ColorizeGenerator(provider_updater) \
             / SaveAsImageGenerator(filename='bin/halo.png'),
+        'graph': ComplexCanvasGenerator(
+            center=0,
+            horizontal_diameter=5,
+            dims=(width, height)) \
+            / FunctionGraphGenerator(lambda x: np.sin(x))
+            / SaveAsImageGenerator(filename='bin/graph.png'),
     }
     if not mode in modes:
         print(f'available modes: {", ".join(modes.keys())}')
