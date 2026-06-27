@@ -6,10 +6,22 @@ import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
+from scipy.signal import convolve
 
 logger = logging.getLogger(__name__)
 
 COLOR_DEFS = {
+    'catppuccin-latte': [
+        '#eff1f5', # Base
+        '#ccd0da', # Base 0
+        '#1e66f5', # Blue
+        '#179299', # Teal
+        '#40a02b', # Green
+        '#df8e1d', # Yellow
+        '#fe640b', # Peach
+        '#e64553', # Maroon
+        '#d20f39', # Red
+    ],
     'catppuccin-machiato': [
         '#24273a', # Base
         '#363a4f', # Base 0
@@ -22,6 +34,7 @@ COLOR_DEFS = {
         '#ed8796', # Red
     ],
 }
+DEFAULT_THEME_NAME = 'catppuccin-machiato'
 
 def cache(f):
     cached_value = None
@@ -98,29 +111,50 @@ class MandelbrotScoreGenerator(GeneratorBase):
         results[to_compute] = -1
         return results / self.__iteration_count
 
-class FunctionGraphGenerator(GeneratorBase):
-    def __init__(self, fn, radius = 0.) -> None:
+class SetGenerator(GeneratorBase):
+    def __init__(self, radius = 1) -> None:
         super().__init__()
-        self.__fn = fn
         self.__radius = radius
 
     def generate(self) -> np.ndarray:
         m = super().generate()
         epsilon = np.abs(m[0, 0] - m[0, 1])
-        radius = int(self.__radius / epsilon) if self.__radius > 0 else 5
-        by_y_mask = np.abs(np.imag(m) - self.__fn(np.real(m))) < epsilon
-        result = np.zeros_like(m, dtype=int)
-        it = np.nditer(m, flags=['multi_index'])
-        for _ in it:
-            if not by_y_mask[it.multi_index]:
-                continue
-
-            for p in np.ndindex((2 * radius, 2 * radius)):
-                i = np.array(it.multi_index) + p - [radius, radius]
-                if np.all((np.array([0, 0]) <= i) & (i < result.shape)):
-                    result[*i] = 1
-
+        result = np.zeros_like(m, dtype=float)
+        result[self.inset(m, epsilon)] = 1
+        result = convolve(result, self.convolve_with(), mode='same')
+        result /= np.max(result)
+        result[result < 0.001] = 0
+        result[result > 0] = 1
         return result
+
+    def inset(self, x, epsilon = 0):
+        return np.abs(x) < epsilon
+
+    @cache
+    def convolve_with(self):
+        l = np.arange(-self.__radius, self.__radius + 1)
+        xx, yy = np.meshgrid(l, l)
+        zz = xx + 1j * yy
+        circle = np.abs(zz) < self.__radius
+        circle = circle.astype(int)
+        return circle
+
+class FunctionGraphGenerator(SetGenerator):
+    def __init__(self, fn, radius=1) -> None:
+        super().__init__(radius)
+        self.__fn = fn
+
+    def inset(self, x, epsilon=0):
+        return np.abs(np.imag(x) - self.__fn(np.real(x))) < epsilon
+
+class ComplexToRealMapGenerator(GeneratorBase):
+    def __init__(self, fn) -> None:
+        super().__init__()
+        self.__fn = fn
+
+    def generate(self) -> np.ndarray:
+        m = super().generate()
+        return self.__fn(m)
 
 def color_to_array(color: str | list) -> np.ndarray:
     if isinstance(color, str):
@@ -178,7 +212,7 @@ class ThresholdColorProvider(ColorProviderBase):
         colored[m < 0, :] = self.__under_color
         colored[m >= 1, :] = self.__over_color
         in_range = (0 <= m) & (m < 1)
-        colored[in_range, :] = self.convert_in_range(score[in_range])
+        colored[in_range, :] = self.convert_in_range(m[in_range])
         return colored
 
     def convert_in_range(self, score: np.ndarray) -> np.ndarray:
@@ -269,17 +303,17 @@ if __name__ == '__main__':
         description='Create and colorize analytic images, such as fractals',
         epilog='for more help read the code')
     parser.add_argument('mode', help='predefined modes')
-    parser.add_argument('-o', '--output', help='output file path, default to bin/<mode>.png')
+    parser.add_argument('-o', '--output', help='output file path, default to bin/<mode>-<theme>.png')
     parser.add_argument('-v', '--verbose', action='store_true', help='show debug logs')
     parser.add_argument('-t', '--theme', choices=COLOR_DEFS.keys(),
-                        default=list(COLOR_DEFS.keys())[0], help='color theme')
+                        default=DEFAULT_THEME_NAME, help='color theme')
     args = parser.parse_args()
     initialize_logger(logging.DEBUG if args.verbose else logging.INFO)
     provider_updater = ColorProviderHolder()
 
     # Init mode
     mode = args.mode
-    output_path = args.output if args.output != None else f'./bin/{mode}.png'
+    output_path = args.output if args.output != None else f'./bin/{mode}-{args.theme}.png'
     colors = COLOR_DEFS[args.theme]
     width, height = 1920, 1080
     color_provider = LinearGradientColorProvider(colors=colors,
@@ -294,34 +328,43 @@ if __name__ == '__main__':
             horizontal_diameter=5) \
             / MandelbrotScoreGenerator(iteration_count=2**7) \
             / ColorizeGenerator(provider_updater) \
-            / SaveAsImageGenerator(filename='bin/default.png'),
+            / SaveAsImageGenerator(filename=output_path),
         'tails': ComplexCanvasGenerator(
             center=np.float128(-.74364085) + np.float128(.13182733) * 1j,
             horizontal_diameter=np.float128(.00012068),
             dims=(width, height)) \
             / MandelbrotScoreGenerator(iteration_count=2**10) \
             / ColorizeGenerator(provider_updater) \
-            / SaveAsImageGenerator(filename='bin/tails.png'),
+            / SaveAsImageGenerator(filename=output_path),
         'anthena': ComplexCanvasGenerator(
             center=np.float128(-.7436447860) + np.float128(.1318252536) * 1j,
             horizontal_diameter=np.float128(.0000029336),
             dims=(width, height)) \
             / MandelbrotScoreGenerator(iteration_count=2**11) \
             / ColorizeGenerator(provider_updater) \
-            / SaveAsImageGenerator(filename='bin/anthena.png'),
+            / SaveAsImageGenerator(filename=output_path),
         'halo': ComplexCanvasGenerator(
             center=np.float128(-.5503493176297569) + np.float128(.6259309572825709 ) * 1j,
             horizontal_diameter=np.float128(.00000000000054),
             dims=(width, height)) \
             / MandelbrotScoreGenerator(iteration_count=2**14) \
             / ColorizeGenerator(provider_updater) \
-            / SaveAsImageGenerator(filename='bin/halo.png'),
+            / SaveAsImageGenerator(filename=output_path),
         'graph': ComplexCanvasGenerator(
             center=0,
             horizontal_diameter=5,
             dims=(width, height)) \
-            / FunctionGraphGenerator(lambda x: np.sin(x))
-            / SaveAsImageGenerator(filename='bin/graph.png'),
+            / FunctionGraphGenerator(lambda x: np.sin(x),
+                                     radius=30)
+            / ColorizeGenerator(provider_updater) \
+            / SaveAsImageGenerator(filename=output_path),
+        'map': ComplexCanvasGenerator(
+            center=0,
+            horizontal_diameter=5,
+            dims=(width, height)) \
+            / ComplexToRealMapGenerator(lambda x: 1 - 3 * np.arctan(np.abs(x)) / np.pi)
+            / ColorizeGenerator(provider_updater) \
+            / SaveAsImageGenerator(filename=output_path),
     }
     if not mode in modes:
         print(f'available modes: {", ".join(modes.keys())}')
