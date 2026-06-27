@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 
-from matplotlib.axes import Axes
 import logging
-import matplotlib.colors as colors
-import matplotlib.pyplot as plt
 import numpy as np
 import argparse
 from scipy.signal import convolve
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +14,11 @@ COLOR_DEFS = {
         '#ccd0da', # Base 0
         '#1e66f5', # Blue
         '#179299', # Teal
-        '#40a02b', # Green
-        '#df8e1d', # Yellow
         '#fe640b', # Peach
         '#e64553', # Maroon
         '#d20f39', # Red
+        '#8839ef', # Mauve
+        '#ea76cb', # Pink
     ],
     'catppuccin-machiato': [
         '#24273a', # Base
@@ -282,15 +280,9 @@ class SaveAsImageGenerator(GeneratorBase):
         self.__filename = filename
 
     def decorate_generation(self, m: np.ndarray) -> np.ndarray:
-        fig = plt.figure(figsize=(m.shape[1], m.shape[0]), dpi=1, frameon=False)
-        ax = Axes(fig, (0, 0, 1, 1))
-        ax.set_axis_off()
-        fig.add_axes(ax)
-        plt.imshow(m,
-                   cmap='gray',
-                   aspect='equal',
-                   interpolation='nearest')
-        plt.savefig(self.__filename, bbox_inches="tight", pad_inches=0, dpi=1)
+        m = (255 * m).astype(np.uint8)
+        im = Image.fromarray(m)
+        im.save(self.__filename)
         return m
 
 class CustomFormatter(logging.Formatter):
@@ -334,6 +326,16 @@ modes = {
         horizontal_diameter=np.float128(.00012068),
         dims=dim_provider) \
         / MandelbrotScoreGenerator(iteration_count=2**10),
+    'spiral': ComplexCanvasGenerator(
+        center=np.float128(-.7435669) + np.float128(.1314023) * 1j,
+        horizontal_diameter=np.float128(.0022878),
+        dims=dim_provider) \
+        / MandelbrotScoreGenerator(iteration_count=2**10),
+    'bump': ComplexCanvasGenerator(
+        center=np.float128(-.74303) + np.float128(.126433) * 1j,
+        horizontal_diameter=np.float128(.01611),
+        dims=dim_provider) \
+        / MandelbrotScoreGenerator(iteration_count=2**10),
     'anthena': ComplexCanvasGenerator(
         center=np.float128(-.7436447860) + np.float128(.1318252536) * 1j,
         horizontal_diameter=np.float128(.0000029336),
@@ -350,35 +352,55 @@ modes = {
         / ComplexToRealMapGenerator(lambda x: 1 - 3 * np.arctan(np.abs(x)) / np.pi)
 }
 
-if __name__ == '__main__':
-    # Args
+def get_args():
     parser = argparse.ArgumentParser(
         prog='Image Generator',
         description='Create and colorize analytic images, such as fractals',
         epilog='for more help read the code')
-    parser.add_argument('mode', help='predefined modes')
-    parser.add_argument('-o', '--output', help='output file path, default to bin/<mode>-<theme>.png')
-    parser.add_argument('-v', '--verbose', action='store_true', help='show debug logs')
-    parser.add_argument('-t', '--theme', choices=COLOR_DEFS.keys(),
+    parser.add_argument('mode',
+                        choices=modes.keys(),
+                        help='predefined modes')
+    parser.add_argument('-o', '--output',
+                        help='output file path, default to bin/<mode>-<theme>.png')
+    parser.add_argument('-v', '--verbose',
+                        action='store_true',
+                        help='show debug logs')
+    parser.add_argument('-t', '--theme',
+                        choices=COLOR_DEFS.keys(),
                         default=DEFAULT_THEME_NAME, help='color theme')
-    args = parser.parse_args()
-    initialize_logger(logging.DEBUG if args.verbose else logging.INFO)
+    parser.add_argument('-u', '--under-color',
+                        default='0',
+                        help='default color for under limit scores, either index or a colorcode')
+    parser.add_argument('-W', '--width',
+                        default=1920,
+                        type=int,
+                        help='width for final image')
+    parser.add_argument('-H', '--height',
+                        default=1080,
+                        type=int,
+                        help='height for final image')
+    return parser.parse_args()
 
-    # Init mode
+def create_generator(args) -> GeneratorBase:
     mode = args.mode
     output_path = args.output if args.output != None else f'./bin/{mode}-{args.theme}.png'
     colors = COLOR_DEFS[args.theme]
+    under_color = args.under_color
+    if not '#' in under_color:
+        under_color = colors[int(under_color)]
+
     color_provider = LinearGradientColorProvider(colors=colors,
-                                                 under_color=colors[0],
+                                                 under_color=under_color,
                                                  mmin=0,
                                                  mmax=1)
     provider_updater.update_provider(color_provider)
-    dim_provider.update_provider(ConstantDimensionsProvider((1920, 1080)))
-    if not mode in modes:
-        print(f'available modes: {", ".join(modes.keys())}')
-        exit(1)
-
-    generator: GeneratorBase = modes[mode] \
+    dim_provider.update_provider(ConstantDimensionsProvider((args.width, args.height)))
+    return modes[mode] \
         / ColorizeGenerator(provider_updater) \
         / SaveAsImageGenerator(filename=output_path)
+
+if __name__ == '__main__':
+    args = get_args()
+    initialize_logger(logging.DEBUG if args.verbose else logging.INFO)
+    generator = create_generator(args)
     generator.generate()
