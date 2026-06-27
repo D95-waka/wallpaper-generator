@@ -6,21 +6,22 @@ import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
-from itertools import pairwise
 
 logger = logging.getLogger(__name__)
 
-COLORS_CATPPUCCIN_MACHIATO = [
-    '#24273a', # Base
-    '#363a4f', # Base 0
-    '#8aadf4', # Blue
-    '#8bd5ca', # Teal
-    '#a6da95', # Green
-    '#eed49f', # Yellow
-    '#f5a97f', # Peach
-    '#ee99a0', # Maroon
-    '#ed8796', # Red
-]
+COLOR_DEFS = {
+    'catppuccin-machiato': [
+        '#24273a', # Base
+        '#363a4f', # Base 0
+        '#8aadf4', # Blue
+        '#8bd5ca', # Teal
+        '#a6da95', # Green
+        '#eed49f', # Yellow
+        '#f5a97f', # Peach
+        '#ee99a0', # Maroon
+        '#ed8796', # Red
+    ],
+}
 
 def cache(f):
     cached_value = None
@@ -166,10 +167,10 @@ class LinearGradientColorProvider(ThresholdColorProvider):
         self.__colors = np.array([color_to_array(x) for x in colors])
 
     def convert_in_range(self, score: np.ndarray) -> np.ndarray:
-        a = self.__colors[np.floor((len(self.__colors) - 1) * score).astype(np.int64), :]
-        b = self.__colors[np.ceil((len(self.__colors) - 1) * score).astype(np.int64), :]
-        c = (((len(self.__colors) - 1) * score) % 1)[:, None]
-        return a * (1 - c) + b * c
+        lower_colors = self.__colors[np.floor((len(self.__colors) - 1) * score).astype(np.int64), :]
+        upper_colors = self.__colors[np.ceil((len(self.__colors) - 1) * score).astype(np.int64), :]
+        convex_combination = (((len(self.__colors) - 1) * score) % 1)[:, None]
+        return lower_colors * (1 - convex_combination) + upper_colors * convex_combination
 
 class ColorizeGenerator(GeneratorBase):
     def __init__(self, color_provider: ColorProviderBase) -> None:
@@ -191,13 +192,7 @@ class SaveAsImageGenerator(GeneratorBase):
         ax = Axes(fig, (0, 0, 1, 1))
         ax.set_axis_off()
         fig.add_axes(ax)
-        palette = colors.LinearSegmentedColormap.from_list('catppuccin-machiato',
-                                                               colors=COLORS_CATPPUCCIN_MACHIATO,
-                                                               under=COLORS_CATPPUCCIN_MACHIATO[0])
         plt.imshow(m,
-                   cmap = palette,
-                   vmin=0,
-                   vmax=1,
                    aspect='equal',
                    interpolation='nearest')
         plt.savefig(self.__filename, bbox_inches="tight", pad_inches=0, dpi=1)
@@ -237,16 +232,19 @@ if __name__ == '__main__':
         prog='Image Generator',
         description='Create and colorize analytic images, such as fractals',
         epilog='for more help read the code')
-    parser.add_argument('mode')
-    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('mode', help='predefined modes')
+    parser.add_argument('-v', '--verbose', action='store_true', help='show debug logs')
+    parser.add_argument('-t', '--theme', choices=COLOR_DEFS.keys(),
+                        default=list(COLOR_DEFS.keys())[0], help='color theme')
     args = parser.parse_args()
     initialize_logger(logging.DEBUG if args.verbose else logging.INFO)
 
     # Init mode
     mode = args.mode
+    colors = COLOR_DEFS[args.theme]
     width, height = 1920, 1080
-    color_provider = LinearGradientColorProvider(colors=COLORS_CATPPUCCIN_MACHIATO,
-                                                 under_color=COLORS_CATPPUCCIN_MACHIATO[0],
+    color_provider = LinearGradientColorProvider(colors=colors,
+                                                 under_color=colors[0],
                                                  mmin=0,
                                                  mmax=1)
     modes = {
@@ -254,7 +252,7 @@ if __name__ == '__main__':
             center=-0.5 + 0j,
             dims=(width, height),
             horizontal_diameter=5) \
-            / MandelbrotScoreGenerator(iteration_count=2**5) \
+            / MandelbrotScoreGenerator(iteration_count=2**7) \
             / ColorizeGenerator(color_provider) \
             / SaveAsImageGenerator(filename='bin/default.png'),
         'tails': ComplexCanvasGenerator(
