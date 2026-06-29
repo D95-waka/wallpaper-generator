@@ -3,7 +3,7 @@
 import logging
 import numpy as np
 import argparse
-from scipy.signal import convolve
+from scipy.ndimage import binary_dilation
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def cache(f):
     cached_value: np.ndarray | None = None
     def new_f(*args):
         nonlocal cached_value
-        if cached_value == None:
+        if cached_value is None:
             cached_value = f(*args)
             return cached_value
         else:
@@ -145,25 +145,47 @@ class SetGenerator(GeneratorBase):
 
     def decorate_generation(self, m: np.ndarray) -> np.ndarray:
         epsilon = np.abs(m[0, 0] - m[0, 1])
-        result = np.zeros_like(m, dtype=float)
-        result[self.inset(m, epsilon)] = 1
-        result = convolve(result, self.convolve_with(), mode='same')
-        result /= np.max(result)
-        result[result < 0.001] = 0
-        result[result > 0] = 1
-        return result
+        result = self.inset(m, epsilon).astype(float)
+        result = binary_dilation(result, structure=self.convolve_with())
+        return result.astype(float)
 
     def inset(self, x, epsilon = 0):
         return np.abs(x) < epsilon
 
     @cache
     def convolve_with(self):
-        l = np.arange(-self.__radius, self.__radius + 1)
+        l = np.arange(-self.__radius, self.__radius)
         xx, yy = np.meshgrid(l, l)
         zz = xx + 1j * yy
-        circle = np.abs(zz) < self.__radius
-        circle = circle.astype(int)
+        circle = np.zeros_like(zz, dtype=float)
+        circle[np.abs(zz) <= self.__radius] = 1
+        circle = circle.astype(float)
         return circle
+
+class PathGenerator(SetGenerator):
+    def __init__(self, radius=1,
+                 path = lambda x : 0.2 * np.exp(x * np.pi * 2j),
+                 score = lambda t: 1.0 if t > 0 else 0.0,
+                 lower_bound = 0.0,
+                 upper_bound = 1.0) -> None:
+        super().__init__(radius)
+        self.__path = path
+        self.__lower_bound = lower_bound
+        self.__upper_bound = upper_bound
+        self.__score = score
+
+    def inset(self, x, epsilon=0):
+        l = np.arange(self.__lower_bound, self.__upper_bound, epsilon)
+        generated_set = self.__path(l)
+        result = np.zeros_like(x, dtype=float)
+        for t, z in zip(l, generated_set):
+            xs = np.argmin(np.abs(np.imag(x[:,0] - z)))
+            ys = np.argmin(np.abs(np.real(x[0,:] - z)))
+            zz = (xs, ys)
+            if np.abs(z - x[*zz]) < epsilon:
+                result[*zz] = self.__score(t)
+
+        return result
 
 class FunctionGraphGenerator(SetGenerator):
     def __init__(self, fn, radius=1) -> None:
@@ -349,7 +371,15 @@ modes = {
     'graph': ComplexCanvasGenerator(dims=dim_provider) \
         / FunctionGraphGenerator(lambda x: np.sin(x), radius=30),
     'map': ComplexCanvasGenerator(dims=dim_provider) \
-        / ComplexToRealMapGenerator(lambda x: 1 - 3 * np.arctan(np.abs(x)) / np.pi)
+        / ComplexToRealMapGenerator(lambda x: 1 - 3 * np.arctan(np.abs(x)) / np.pi),
+    'log': ComplexCanvasGenerator(dims=dim_provider) \
+        / ComplexToRealMapGenerator(lambda x: np.angle(x) / 2 / np.pi + 1/2),
+    'path': ComplexCanvasGenerator(dims=dim_provider,
+                                   horizontal_diameter=12) \
+        / PathGenerator(path=lambda t: np.exp(t * 1j) + 2 * np.exp(-t * 2j),
+                        score=lambda t: np.sin(t) + 2,
+                        upper_bound=2 * np.pi,
+                        radius=5)
 }
 
 def get_args():
