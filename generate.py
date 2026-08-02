@@ -126,13 +126,21 @@ class MandelbrotScoreGenerator(GeneratorBase):
 
     @cache
     def decorate_generation(self, m: np.ndarray) -> np.ndarray:
-        z = np.zeros_like(m, dtype=np.complex256)
+        mr = np.real(m)
+        mi = np.imag(m)
+        zr = np.zeros_like(m, dtype=np.float128)
+        zi = np.zeros_like(m, dtype=np.float128)
         results = np.zeros_like(m, dtype=np.int16)
         to_compute = results == 0
         for i in range(self.__iteration_count):
             logger.debug(f'{round(100 * i / self.__iteration_count, 2)}% completed')
-            z[to_compute] = np.power(z[to_compute], 2) + m[to_compute]
-            to_compute &= np.abs(z) < 2
+            zii = zi[to_compute]
+            zrr = zr[to_compute]
+            zi2 = zii ** 2
+            zr2 = zrr ** 2
+            zi[to_compute] = 2 * zrr * zii + mi[to_compute]
+            zr[to_compute] = zr2 - zi2 + mr[to_compute]
+            to_compute[to_compute] &= zr2 + zi2 < 4
             results[to_compute] += 1
 
         results[to_compute] = -1
@@ -375,10 +383,20 @@ modes = {
         dims=dim_provider) \
         / MandelbrotScoreGenerator(iteration_count=2**11),
     'halo': ComplexCanvasGenerator(
-        center=np.float128(-.5503493176297569) + np.float128(.6259309572825709 ) * 1j,
+        center=np.float128(-.5503493176297569) + np.float128(.6259309572825709) * 1j,
         horizontal_diameter=np.float128(.00000000000054),
         dims=dim_provider) \
         / MandelbrotScoreGenerator(iteration_count=2**14),
+    'wormhole': ComplexCanvasGenerator(
+        center=np.float128(-.6191863031053233) + np.float128(.4047769776925564) * 1j,
+        horizontal_diameter=np.float128(.000003),
+        dims=dim_provider) \
+        / MandelbrotScoreGenerator(iteration_count=2**12),
+    'blackhole': ComplexCanvasGenerator(
+        center=np.float128(-.74715) + np.float128(.10025) * 1j,
+        horizontal_diameter=np.float128(.0013),
+        dims=dim_provider) \
+        / MandelbrotScoreGenerator(iteration_count=2**11),
     'graph': ComplexCanvasGenerator(dims=dim_provider) \
         / FunctionGraphGenerator(lambda x: np.sin(x), radius=30),
     'map': ComplexCanvasGenerator(dims=dim_provider) \
