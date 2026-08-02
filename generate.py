@@ -32,7 +32,7 @@ COLOR_DEFS = {
         '#ed8796', # Red
     ],
 }
-DEFAULT_THEME_NAME = 'catppuccin-machiato'
+DEFAULT_THEME_NAMES = ['catppuccin-machiato', 'catppuccin-latte']
 
 def cache(f):
     cached_value: np.ndarray | None = None
@@ -188,20 +188,32 @@ class PathGenerator(SetGenerator):
         return result
 
 class FunctionGraphGenerator(SetGenerator):
-    def __init__(self, fn, radius=1) -> None:
+    def __init__(self, fn, radius=1, normalize=False) -> None:
         super().__init__(radius)
         self.__fn = fn
+        self.__normalize = normalize
 
     def inset(self, x, epsilon=0):
-        return np.abs(np.imag(x) - self.__fn(np.real(x))) < epsilon
+        result = np.abs(np.imag(x) - self.__fn(np.real(x))) < epsilon
+        if self.__normalize:
+            result -= np.min(result)
+            result /= np.max(result)
+
+        return result
 
 class ComplexToRealMapGenerator(GeneratorBase):
-    def __init__(self, fn) -> None:
+    def __init__(self, fn, normalize = False) -> None:
         super().__init__()
         self.__fn = fn
+        self.__normalize = normalize
 
     def decorate_generation(self, m: np.ndarray) -> np.ndarray:
-        return self.__fn(m)
+        result = self.__fn(m)
+        if self.__normalize:
+            result -= np.min(result)
+            result /= np.max(result)
+
+        return result
 
 def color_to_array(color: str | list) -> np.ndarray:
     if isinstance(color, str):
@@ -335,7 +347,6 @@ def initialize_logger(level):
     ch.setFormatter(CustomFormatter())
     logger.addHandler(ch)
 
-provider_updater = ColorProviderHolder()
 dim_provider = DimensionProviderHolder()
 modes = {
     'default': ComplexCanvasGenerator(
@@ -372,8 +383,14 @@ modes = {
         / FunctionGraphGenerator(lambda x: np.sin(x), radius=30),
     'map': ComplexCanvasGenerator(dims=dim_provider) \
         / ComplexToRealMapGenerator(lambda x: 1 - 3 * np.arctan(np.abs(x)) / np.pi),
-    'log': ComplexCanvasGenerator(dims=dim_provider) \
-        / ComplexToRealMapGenerator(lambda x: np.angle(x) / 2 / np.pi + 1/2),
+    'sin': ComplexCanvasGenerator(dims=dim_provider,
+                                  horizontal_diameter=10) \
+        / ComplexToRealMapGenerator(lambda x: np.arctan(np.real(np.sin(x))),
+                                    normalize=True),
+    'polynomial': ComplexCanvasGenerator(dims=dim_provider,
+                                  horizontal_diameter=6) \
+        / ComplexToRealMapGenerator(lambda x: np.arctan(np.real(x**5)),
+                                    normalize=True),
     'path': ComplexCanvasGenerator(dims=dim_provider,
                                    horizontal_diameter=12) \
         / PathGenerator(path=lambda t: np.exp(t * 1j) + 2 * np.exp(-t * 2j),
@@ -395,9 +412,11 @@ def get_args():
     parser.add_argument('-v', '--verbose',
                         action='store_true',
                         help='show debug logs')
-    parser.add_argument('-t', '--theme',
+    parser.add_argument('-t', '--themes',
                         choices=COLOR_DEFS.keys(),
-                        default=DEFAULT_THEME_NAME, help='color theme')
+                        default=DEFAULT_THEME_NAMES,
+                        action='append',
+                        help='color theme')
     parser.add_argument('-u', '--under-color',
                         default='0',
                         help='default color for under limit scores, either index or a colorcode')
@@ -411,26 +430,32 @@ def get_args():
                         help='height for final image')
     return parser.parse_args()
 
-def create_generator(args) -> GeneratorBase:
+def create_generators(args) -> list[GeneratorBase]:
     mode = args.mode
-    output_path = args.output if args.output != None else f'./bin/{mode}-{args.theme}.png'
-    colors = COLOR_DEFS[args.theme]
-    under_color = args.under_color
-    if not '#' in under_color:
-        under_color = colors[int(under_color)]
-
-    color_provider = LinearGradientColorProvider(colors=colors,
-                                                 under_color=under_color,
-                                                 mmin=0,
-                                                 mmax=1)
-    provider_updater.update_provider(color_provider)
+    colors = [COLOR_DEFS[t] for t in args.themes]
     dim_provider.update_provider(ConstantDimensionsProvider((args.width, args.height)))
-    return modes[mode] \
-        / ColorizeGenerator(provider_updater) \
-        / SaveAsImageGenerator(filename=output_path)
+    lst = []
+    for theme, theme_name in zip(colors, args.themes):
+        output_path = args.output if args.output != None else f'./bin/{mode}-{theme_name}.png'
+        under_color: str = args.under_color
+        if not '#' in under_color:
+            under_color = theme[int(under_color)]
+
+        color_provider = LinearGradientColorProvider(colors=theme,
+                                                     under_color=under_color,
+                                                     mmin=0,
+                                                     mmax=1)
+        provider_updater = ColorProviderHolder()
+        provider_updater.update_provider(color_provider)
+        lst.append(modes[mode] \
+            / ColorizeGenerator(provider_updater) \
+            / SaveAsImageGenerator(filename=output_path))
+
+    return lst
 
 if __name__ == '__main__':
     args = get_args()
     initialize_logger(logging.DEBUG if args.verbose else logging.INFO)
-    generator = create_generator(args)
-    generator.generate()
+    generators = create_generators(args)
+    for generator in generators:
+        generator.generate()
